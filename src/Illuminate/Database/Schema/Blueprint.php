@@ -194,6 +194,7 @@ class Blueprint
     protected function addImpliedCommands()
     {
         $this->addFluentIndexes();
+        $this->addForeignKeyIndexes();
         $this->addFluentCommands();
 
         if (! $this->creating()) {
@@ -261,6 +262,41 @@ class Blueprint
 
                     continue 2;
                 }
+            }
+        }
+    }
+
+    /**
+     * Add index commands for any foreign keys that are not covered by an existing index.
+     *
+     * @return void
+     */
+    protected function addForeignKeyIndexes()
+    {
+        $foreignKeys = array_filter($this->commands, fn ($command) => $command instanceof ForeignKeyDefinition);
+
+        if ($foreignKeys === [] || ! $this->connection->getConfig('index_foreign_keys')) {
+            return;
+        }
+
+        $indexes = (new Collection($this->commands))
+            ->filter(fn ($command) => ! $command instanceof ColumnDefinition
+                && in_array($command->name, ['primary', 'unique', 'index']))
+            ->map(fn ($command) => $command->columns)
+            ->all();
+
+        foreach ($foreignKeys as $command) {
+            if ($command->withoutIndex) {
+                continue;
+            }
+
+            $covered = (new Collection($indexes))->contains(fn ($columns) => is_array($columns)
+                && $command->columns === array_slice($columns, 0, count($command->columns)));
+
+            if (! $covered) {
+                $this->index($command->columns);
+
+                $indexes[] = $command->columns;
             }
         }
     }
