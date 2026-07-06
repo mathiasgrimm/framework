@@ -1587,6 +1587,7 @@ class DatabaseMySqlSchemaGrammarTest extends TestCase
         $connection = m::mock(Connection::class)
             ->shouldReceive('getTablePrefix')->andReturn($prefix)
             ->shouldReceive('getConfig')->with('prefix_indexes')->andReturn(null)
+            ->shouldReceive('getConfig')->with('index_foreign_keys')->andReturn(null)
             ->shouldReceive('isMaria')->andReturn(false)
             ->getMock();
 

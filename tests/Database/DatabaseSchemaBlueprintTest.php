@@ -683,22 +683,218 @@ class DatabaseSchemaBlueprintTest extends TestCase
         $this->assertEquals(['alter table `posts` add `note` tinytext not null default \'this\'\'ll work too\''], $getSql('MySql'));
     }
 
-    protected function getConnection(?string $grammar = null, string $prefix = '')
+    public function testForeignKeyIndexIsNotCreatedByDefault()
     {
+        $sql = $this->getBlueprint('Postgres', 'posts', function ($table) {
+            $table->create();
+            $table->id();
+            $table->foreignId('user_id')->constrained();
+        })->toSql();
+
+        $this->assertSame([], $this->indexStatements($sql));
+    }
+
+    public function testForeignKeyIndexIsCreatedWhenEnabled()
+    {
+        $sql = $this->getBlueprint('Postgres', 'posts', function ($table) {
+            $table->create();
+            $table->id();
+            $table->foreignId('user_id')->constrained();
+        }, config: ['index_foreign_keys' => true])->toSql();
+
+        $this->assertSame(['create index "posts_user_id_index" on "posts" ("user_id")'], $this->indexStatements($sql));
+    }
+
+    public function testForeignKeyIndexIsCreatedWhenEnabledOnSqlite()
+    {
+        $sql = $this->getBlueprint('SQLite', 'posts', function ($table) {
+            $table->create();
+            $table->id();
+            $table->foreignId('user_id')->constrained();
+        }, config: ['index_foreign_keys' => true])->toSql();
+
+        $this->assertStringContainsString('foreign key("user_id") references "users"("id")', $sql[0]);
+        $this->assertSame(['create index "posts_user_id_index" on "posts" ("user_id")'], $this->indexStatements($sql));
+    }
+
+    public function testForeignKeyIndexIsCreatedWhenEnabledOnSqlServerAndMySql()
+    {
+        $getSql = fn ($grammar) => $this->getBlueprint($grammar, 'posts', function ($table) {
+            $table->create();
+            $table->id();
+            $table->foreignId('user_id')->constrained();
+        }, config: ['index_foreign_keys' => true])->toSql();
+
+        $this->assertSame(['create index "posts_user_id_index" on "posts" ("user_id")'], $this->indexStatements($getSql('SqlServer')));
+        $this->assertSame(['alter table `posts` add index `posts_user_id_index`(`user_id`)'], $this->indexStatements($getSql('MySql'), 'add index'));
+    }
+
+    public function testForeignKeyIndexIsNotDuplicatedWhenIndexAlreadyExists()
+    {
+        $sql = $this->getBlueprint('Postgres', 'posts', function ($table) {
+            $table->create();
+            $table->foreignId('user_id')->constrained();
+            $table->index('user_id');
+        }, config: ['index_foreign_keys' => true])->toSql();
+
+        $this->assertSame(['create index "posts_user_id_index" on "posts" ("user_id")'], $this->indexStatements($sql));
+    }
+
+    public function testForeignKeyIndexIsNotDuplicatedWhenFluentIndexExists()
+    {
+        $sql = $this->getBlueprint('Postgres', 'posts', function ($table) {
+            $table->create();
+            $table->foreignId('user_id')->index()->constrained();
+        }, config: ['index_foreign_keys' => true])->toSql();
+
+        $this->assertSame(['create index "posts_user_id_index" on "posts" ("user_id")'], $this->indexStatements($sql));
+    }
+
+    public function testForeignKeyIndexIsNotCreatedWhenCoveredByIndexDeclaredAfterwards()
+    {
+        $sql = $this->getBlueprint('Postgres', 'posts', function ($table) {
+            $table->create();
+            $table->foreignId('user_id')->constrained();
+            $table->string('title');
+            $table->unique(['user_id', 'title']);
+        }, config: ['index_foreign_keys' => true])->toSql();
+
+        $this->assertSame([], $this->indexStatements($sql));
+    }
+
+    public function testForeignKeyIndexIsCreatedForForeignKeysNotCoveredByCompositeUnique()
+    {
+        $sql = $this->getBlueprint('Postgres', 'books', function ($table) {
+            $table->create();
+            $table->id();
+            $table->foreignId('author_id')->constrained();
+            $table->foreignId('category_id')->constrained();
+            $table->string('title');
+            $table->unique(['author_id', 'title']);
+        }, config: ['index_foreign_keys' => true])->toSql();
+
+        $this->assertSame(['create index "books_category_id_index" on "books" ("category_id")'], $this->indexStatements($sql));
+    }
+
+    public function testForeignKeyIndexIsCreatedWhenColumnIsNotLeftmostInCompositeIndex()
+    {
+        $sql = $this->getBlueprint('Postgres', 'posts', function ($table) {
+            $table->create();
+            $table->foreignId('user_id')->constrained();
+            $table->string('title');
+            $table->unique(['title', 'user_id']);
+        }, config: ['index_foreign_keys' => true])->toSql();
+
+        $this->assertSame(['create index "posts_user_id_index" on "posts" ("user_id")'], $this->indexStatements($sql));
+    }
+
+    public function testForeignKeyIndexIsNotCreatedWhenColumnIsPrimary()
+    {
+        $sql = $this->getBlueprint('Postgres', 'posts', function ($table) {
+            $table->create();
+            $table->foreignId('user_id')->primary()->constrained();
+        }, config: ['index_foreign_keys' => true])->toSql();
+
+        $this->assertSame([], $this->indexStatements($sql));
+    }
+
+    public function testForeignKeyIndexIsNotCreatedWhenUsingWithoutIndex()
+    {
+        $sql = $this->getBlueprint('Postgres', 'posts', function ($table) {
+            $table->create();
+            $table->foreignId('user_id')->constrained()->withoutIndex();
+        }, config: ['index_foreign_keys' => true])->toSql();
+
+        $this->assertSame([], $this->indexStatements($sql));
+
+        $sql = $this->getBlueprint('Postgres', 'posts', function ($table) {
+            $table->create();
+            $table->foreignId('user_id');
+            $table->foreign('user_id')->references('id')->on('users')->withoutIndex();
+        }, config: ['index_foreign_keys' => true])->toSql();
+
+        $this->assertSame([], $this->indexStatements($sql));
+    }
+
+    public function testForeignKeyIndexIsCreatedForMultiColumnForeignKeys()
+    {
+        $sql = $this->getBlueprint('Postgres', 'children', function ($table) {
+            $table->create();
+            $table->integer('a');
+            $table->integer('b');
+            $table->foreign(['a', 'b'])->references(['x', 'y'])->on('parent');
+        }, config: ['index_foreign_keys' => true])->toSql();
+
+        $this->assertSame(['create index "children_a_b_index" on "children" ("a", "b")'], $this->indexStatements($sql));
+
+        $sql = $this->getBlueprint('Postgres', 'children', function ($table) {
+            $table->create();
+            $table->integer('a');
+            $table->integer('b');
+            $table->integer('c');
+            $table->foreign(['a', 'b'])->references(['x', 'y'])->on('parent');
+            $table->index(['a', 'b', 'c']);
+        }, config: ['index_foreign_keys' => true])->toSql();
+
+        $this->assertSame(['create index "children_a_b_c_index" on "children" ("a", "b", "c")'], $this->indexStatements($sql));
+    }
+
+    public function testForeignKeyIndexIsNotDuplicatedForForeignKeysOnTheSameColumns()
+    {
+        $sql = $this->getBlueprint('Postgres', 'posts', function ($table) {
+            $table->create();
+            $table->foreignId('user_id');
+            $table->foreign('user_id')->references('id')->on('users');
+            $table->foreign('user_id')->references('id')->on('archived_users');
+        }, config: ['index_foreign_keys' => true])->toSql();
+
+        $this->assertSame(['create index "posts_user_id_index" on "posts" ("user_id")'], $this->indexStatements($sql));
+    }
+
+    public function testForeignKeyIndexIsCreatedWhenAlteringTable()
+    {
+        $sql = $this->getBlueprint('Postgres', 'posts', function ($table) {
+            $table->foreignId('user_id')->constrained();
+        }, config: ['index_foreign_keys' => true])->toSql();
+
+        $this->assertSame(['create index "posts_user_id_index" on "posts" ("user_id")'], $this->indexStatements($sql));
+    }
+
+    public function testDroppingForeignKeyDoesNotDropIndex()
+    {
+        $sql = $this->getBlueprint('Postgres', 'posts', function ($table) {
+            $table->dropForeign(['user_id']);
+        }, config: ['index_foreign_keys' => true])->toSql();
+
+        $this->assertSame(['alter table "posts" drop constraint "posts_user_id_foreign"'], $sql);
+    }
+
+    protected function indexStatements(array $sql, string $needle = 'create index'): array
+    {
+        return array_values(array_filter($sql, fn ($statement) => str_contains($statement, $needle)));
+    }
+
+    protected function getConnection(?string $grammar = null, string $prefix = '', array $config = [])
+    {
+        $config = array_merge(['prefix_indexes' => true], $config);
+
         $connection = m::mock(Connection::class)
             ->shouldReceive('getTablePrefix')->andReturn($prefix)
-            ->shouldReceive('getConfig')->with('prefix_indexes')->andReturn(true)
+            ->shouldReceive('getConfig')->andReturnUsing(fn ($key) => $config[$key] ?? null)
             ->getMock();
 
         $grammar ??= 'MySql';
         $grammarClass = 'Illuminate\Database\Schema\Grammars\\'.$grammar.'Grammar';
         $builderClass = 'Illuminate\Database\Schema\\'.$grammar.'Builder';
 
+        $builder = m::mock($builderClass);
+
         $connection->shouldReceive('getSchemaGrammar')->andReturn(new $grammarClass($connection));
-        $connection->shouldReceive('getSchemaBuilder')->andReturn(m::mock($builderClass));
+        $connection->shouldReceive('getSchemaBuilder')->andReturn($builder);
 
         if ($grammar === 'SQLite') {
             $connection->shouldReceive('getServerVersion')->andReturn('3.35');
+            $builder->shouldReceive('parseSchemaAndTable')->andReturnUsing(fn ($table) => [null, $table]);
         }
 
         if ($grammar === 'MySql') {
@@ -712,9 +908,10 @@ class DatabaseSchemaBlueprintTest extends TestCase
         ?string $grammar = null,
         string $table = '',
         ?Closure $callback = null,
-        string $prefix = ''
+        string $prefix = '',
+        array $config = []
     ): Blueprint {
-        $connection = $this->getConnection($grammar, $prefix);
+        $connection = $this->getConnection($grammar, $prefix, $config);
 
         return new Blueprint($connection, $table, $callback);
     }
